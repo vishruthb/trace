@@ -1,21 +1,10 @@
 # trace
 
-> **Mechanistic Interpretability under Precision Constraints**
+`trace` is a technical diagnostic framework designed to audit the structural integrity of AI safety mechanisms during model optimization. As models transition from high-precision research environments (FP32) to optimized production environments (INT8/INT4), the internal representations undergo non-linear transformations. `trace` programmatically identifies if these transformations lead to something called "safety bit rot", where capability features are preserved but alignment-centric features are degraded or silenced.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python 3.9+">
-  <img src="https://img.shields.io/badge/pytorch-2.0+-orange.svg" alt="PyTorch 2.0+">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
-</p>
+In current ML workflows, quantization is treated as a performance optimization problem (minimizing perplexity loss). However, from a safety perspective, even a small increase in perplexity could represent the total collapse of a specific, sparsely-represented safety circuit.
 
-**trace** is a technical diagnostic framework designed to audit the structural integrity of AI safety mechanisms during model optimization. As models transition from high-precision research environments (FP32) to optimized production environments (INT8/INT4), the internal representations—or "circuits"—undergo non-linear transformations. **trace** programmatically identifies if these transformations lead to **"Safety Bit-Rot,"** where capability features are preserved but alignment-critical features are degraded or silenced.
-
-## The Problem: The Systems-Safety Gap
-
-In current ML workflows, quantization is treated as a performance optimization problem (minimizing Perplexity loss). However, from a safety perspective, even a small increase in Perplexity could represent the total collapse of a specific, sparsely-represented safety circuit.
-
-**trace** addresses three primary risks:
-
+`trace` addresses three primary risks:
 1. **Feature Smearing:** Low-precision rounding causing distinct safety features to merge into a single noisy signal
 2. **Activation Muting:** Safety-critical "refusal" neurons falling below the quantization clipping threshold
 3. **Adversarial Divergence:** Quantization-induced noise creating new, "un-traced" pathways that adversarial prompts can exploit
@@ -57,7 +46,7 @@ print(results.summary())
 
 > **Note:** The package is imported as `trace_lib` to avoid conflicts with Python's built-in `trace` module. You can alias it as `trace` for convenience.
 
-## Core Concepts
+## Core Ideas introduced in `trace`
 
 ### The Trace Metric: Cross-Precision Feature Recovery (CPFR)
 
@@ -74,8 +63,7 @@ Where:
 
 ### Safety Fingerprints
 
-trace creates a "Safety Fingerprint" by identifying which Sparse Autoencoder (SAE) features correspond to safety-critical behaviors:
-
+`trace` creates a "safety fingerprint" by identifying which Sparse Autoencoder (SAE) features correspond to safety-critical behaviors:
 - **Refusal** circuits that reject harmful requests
 - **Uncertainty** circuits that express epistemic humility
 - **Safety warning** circuits that provide appropriate disclaimers
@@ -135,7 +123,7 @@ results = auditor.run_sweep(
 print(results.best_config(min_cpfr=0.9))
 ```
 
-## Metrics
+## Benchmarking/Metrics
 
 ### CPFR (Cross-Precision Feature Recovery)
 
@@ -197,7 +185,7 @@ print(f"Muting rate: {result['muting_rate']:.2%}")
 
 ## Built-in Datasets
 
-trace includes curated datasets for common safety behaviors:
+`trace` includes curated datasets for common safety behaviors (Note: this is still a WIP):
 
 ```python
 from trace_lib.datasets import get_dataset, list_datasets
@@ -212,33 +200,6 @@ print(f"Safety prompts: {len(dataset.safety_prompts)}")
 print(f"Baseline prompts: {len(dataset.baseline_prompts)}")
 ```
 
-## Examples
-
-See the `examples/` directory for complete usage examples:
-
-- `basic_audit.py` - Simple audit of a quantized model
-- `precision_sweep.py` - Comprehensive sweep across quantization methods
-
-## Requirements
-
-- Python 3.9+
-- PyTorch 2.0+
-- Transformers 4.35+
-- See `pyproject.toml` for full dependencies
-
-## License
-
-MIT License - See LICENSE for details.
-
-## Citation
-
-```bibtex
-@software{trace2024,
-  title = {trace: Mechanistic Interpretability under Precision Constraints},
-  year = {2024},
-  url = {https://github.com/trace-interp/trace}
-}
-```
 
 ## Contributing
 
