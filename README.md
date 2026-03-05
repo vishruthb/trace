@@ -1,10 +1,10 @@
 # trace
 
-`trace` is a technical diagnostic framework designed to audit the structural integrity of AI safety mechanisms during model optimization. As models transition from high-precision research environments (FP32) to optimized production environments (INT8/INT4), the internal representations undergo non-linear transformations. `trace` programmatically identifies if these transformations lead to something called "safety bit rot", where capability features are preserved but alignment-centric features are degraded or silenced.
+Trace is a technical diagnostic framework designed to audit the structural integrity of AI safety mechanisms during model optimization. As models transition from high-precision research environments (FP32) to optimized production environments (INT8/INT4), the internal representations undergo non-linear transformations. Trace programmatically identifies if these transformations lead to something called "safety bit rot", where capability features are preserved but alignment-centric features are degraded or silenced.
 
 In current ML workflows, quantization is treated as a performance optimization problem (minimizing perplexity loss). However, from a safety perspective, even a small increase in perplexity could represent the total collapse of a specific, sparsely-represented safety circuit.
 
-`trace` addresses three primary risks:
+Trace addresses three primary risks:
 1. **Feature Smearing:** Low-precision rounding causing distinct safety features to merge into a single noisy signal
 2. **Activation Muting:** Safety-critical "refusal" neurons falling below the quantization clipping threshold
 3. **Adversarial Divergence:** Quantization-induced noise creating new, "un-traced" pathways that adversarial prompts can exploit
@@ -44,9 +44,14 @@ print(results.summary())
 # Output: "Warning: Feature #772 (Refusal) degraded by 22% in INT8"
 ```
 
-> **Note:** The package is imported as `trace_lib` to avoid conflicts with Python's built-in `trace` module. You can alias it as `trace` for convenience.
+Further examples:
+- Start here: [`examples/trace_quickstart.ipynb`](examples/trace_quickstart.ipynb)
+- Script example: [`examples/basic_audit.py`](examples/basic_audit.py)
+- Sweep example: [`examples/precision_sweep.py`](examples/precision_sweep.py)
 
-## Core Ideas introduced in `trace`
+> **Note:** The package is imported as `trace_lib` to avoid conflicts with Python's built-in Trace module. You can alias it as Trace for convenience.
+
+## Core Ideas introduced in Trace
 
 ### The Trace Metric: Cross-Precision Feature Recovery (CPFR)
 
@@ -63,7 +68,7 @@ Where:
 
 ### Safety Fingerprints
 
-`trace` creates a "safety fingerprint" by identifying which Sparse Autoencoder (SAE) features correspond to safety-critical behaviors:
+Trace creates a "safety fingerprint" by identifying which Sparse Autoencoder (SAE) features correspond to safety-critical behaviors:
 - **Refusal** circuits that reject harmful requests
 - **Uncertainty** circuits that express epistemic humility
 - **Safety warning** circuits that provide appropriate disclaimers
@@ -185,7 +190,7 @@ print(f"Muting rate: {result['muting_rate']:.2%}")
 
 ## Built-in Datasets
 
-`trace` includes curated datasets for common safety behaviors (Note: this is still a WIP):
+Trace includes curated datasets for common safety behaviors (Note: this is still a WIP):
 
 ```python
 from trace_lib.datasets import get_dataset, list_datasets
@@ -203,4 +208,4 @@ print(f"Baseline prompts: {len(dataset.baseline_prompts)}")
 
 ## Contributing
 
-Contributions are welcome! Please see our contributing guidelines for more details.
+Contributions are welcome! Please see our contributing guidelines for more details (coming soon).
