@@ -137,28 +137,42 @@ class CPFR:
         feature_scores = 1.0 - (diff_norms / ref_norms)
         feature_scores = torch.clamp(feature_scores, min=0.0, max=1.0)
 
-        # Apply mask if provided
+        mask: Optional[torch.Tensor] = None
         if feature_mask is not None:
-            feature_scores = feature_scores * feature_mask
+            mask = feature_mask.to(device=feature_scores.device, dtype=feature_scores.dtype).view(-1)
+            if mask.shape != feature_scores.shape:
+                raise ValueError(
+                    f"feature_mask shape {tuple(mask.shape)} does not match "
+                    f"feature dimension {tuple(feature_scores.shape)}"
+                )
 
         # Compute correlation between features
         feature_correlations = self._compute_correlations(features_ref, features_quant)
 
         # Identify degraded and lost features
-        degraded_features = (
-            (feature_scores < self.degradation_threshold)
-            .nonzero(as_tuple=True)[0]
-            .tolist()
-        )
-        lost_features = (
-            (feature_scores < self.loss_threshold).nonzero(as_tuple=True)[0].tolist()
-        )
+        if mask is None:
+            degraded_selector = feature_scores < self.degradation_threshold
+            lost_selector = feature_scores < self.loss_threshold
+        else:
+            active_mask = mask > 0
+            degraded_selector = (feature_scores < self.degradation_threshold) & active_mask
+            lost_selector = (feature_scores < self.loss_threshold) & active_mask
+
+        degraded_features = degraded_selector.nonzero(as_tuple=True)[0].tolist()
+        lost_features = lost_selector.nonzero(as_tuple=True)[0].tolist()
 
         # Overall CPFR score (weighted mean, weighting by feature activation magnitude)
         ref_activation_weights = torch.norm(features_ref, dim=0) + self.eps
-        overall_score = (
-            feature_scores * ref_activation_weights
-        ).sum() / ref_activation_weights.sum()
+        if mask is not None:
+            ref_activation_weights = ref_activation_weights * mask
+
+        weight_sum = ref_activation_weights.sum()
+        if weight_sum.item() <= self.eps:
+            overall_score = torch.tensor(0.0, device=feature_scores.device, dtype=feature_scores.dtype)
+        else:
+            overall_score = (
+                feature_scores * ref_activation_weights
+            ).sum() / weight_sum
 
         return CPFRResult(
             score=overall_score.item(),

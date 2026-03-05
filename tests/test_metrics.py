@@ -54,6 +54,31 @@ class TestCPFR:
         result = cpfr.compute(features, features)
         assert result.integrity_status == "EXCELLENT"
 
+    def test_feature_mask_focuses_cpfr_on_selected_features(self):
+        """Masked CPFR should ignore degradation in unmasked features."""
+        cpfr = CPFR(degradation_threshold=0.8, loss_threshold=0.5, normalize=False)
+
+        features_ref = torch.ones(32, 4)
+        features_quant = features_ref.clone()
+        features_quant[:, 1:] = 0.0  # Degrade unmasked features heavily
+
+        # Track only feature 0 (which is perfectly preserved)
+        feature_mask = torch.tensor([1.0, 0.0, 0.0, 0.0])
+
+        result = cpfr.compute(features_ref, features_quant, feature_mask=feature_mask)
+
+        assert result.score > 0.99
+        assert result.degraded_features == []
+        assert result.lost_features == []
+
+    def test_feature_mask_shape_validation(self, cpfr):
+        """A mask with wrong dimensionality should raise a clear error."""
+        features_ref = torch.randn(8, 16)
+        features_quant = features_ref.clone()
+
+        with pytest.raises(ValueError):
+            cpfr.compute(features_ref, features_quant, feature_mask=torch.ones(8))
+
 
 class TestFeatureDrift:
     @pytest.fixture

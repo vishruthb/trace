@@ -178,6 +178,7 @@ class OptimizationAuditor:
         sae_dict: dict[int, Any],  # layer -> SAE
         tokenizer: Any,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        activation_device: str = "cpu",
     ):
         """
         Initialize OptimizationAuditor.
@@ -187,11 +188,13 @@ class OptimizationAuditor:
             sae_dict: SAEs for each layer
             tokenizer: Model tokenizer
             device: Device for inference
+            activation_device: Where to store captured activations ("cpu" or "cuda")
         """
         self.model = model
         self.sae_dict = sae_dict
         self.tokenizer = tokenizer
         self.device = device
+        self.activation_device = activation_device
 
         # Import metrics
         from trace_lib.metrics import CPFR, FeatureDrift
@@ -204,7 +207,7 @@ class OptimizationAuditor:
         hook_config = HookConfig(
             layers=list(sae_dict.keys()),
             hook_points=["resid_post"],
-            device="cpu",  # Store on CPU to save memory
+            device=self.activation_device,
         )
         self.hook_manager = HookManager(model, hook_config)
 
@@ -321,7 +324,7 @@ class OptimizationAuditor:
         hook_config = HookConfig(
             layers=list(self.sae_dict.keys()),
             hook_points=["resid_post"],
-            device="cpu",
+            device=self.activation_device,
         )
         hook_manager = HookManager(model, hook_config)
 
@@ -358,12 +361,45 @@ class OptimizationAuditor:
                 result[layer] = torch.cat(feat_list, dim=0)
         return result
 
+    def _build_safety_feature_mask(
+        self,
+        safety_features: torch.Tensor,
+        baseline_features: torch.Tensor,
+        z_threshold: float = 1.0,
+        min_features: int = 1,
+    ) -> Optional[torch.Tensor]:
+        """
+        Build a feature mask using contrastive activation (safety vs baseline).
+
+        Returns:
+            Float mask of shape (d_sae,), or None when mask cannot be computed.
+        """
+        if safety_features.numel() == 0 or baseline_features.numel() == 0:
+            return None
+
+        safety_mean = safety_features.mean(dim=0)
+        baseline_mean = baseline_features.mean(dim=0)
+        baseline_std = baseline_features.std(dim=0) + 1e-8
+
+        z_scores = (safety_mean - baseline_mean) / baseline_std
+        mask = (z_scores > z_threshold).to(dtype=safety_features.dtype)
+
+        if mask.sum().item() < min_features:
+            k = min(max(min_features, 1), z_scores.numel())
+            topk = torch.topk(z_scores, k=k).indices
+            mask = torch.zeros_like(z_scores, dtype=safety_features.dtype)
+            mask[topk] = 1.0
+
+        return mask
+
     def audit_config(
         self,
         config: QuantizationConfig,
         test_prompts: list[str],
         baseline_prompts: Optional[list[str]] = None,
         safety_feature_ids: Optional[dict[int, list[int]]] = None,
+        safety_z_threshold: float = 1.0,
+        min_safety_features: int = 1,
     ) -> AuditResult:
         """
         Audit a single quantization configuration.
@@ -371,8 +407,10 @@ class OptimizationAuditor:
         Args:
             config: Quantization config to test
             test_prompts: Safety-relevant prompts
-            baseline_prompts: Normal prompts (for reference metrics)
-            safety_feature_ids: Specific features to track
+            baseline_prompts: Normal prompts used to derive safety-feature masks
+            safety_feature_ids: Explicit feature ids to track (overrides baseline masks)
+            safety_z_threshold: Min z-score (safety vs baseline) for a feature to be tracked
+            min_safety_features: Minimum number of masked features per layer
 
         Returns:
             AuditResult with metrics
@@ -397,6 +435,10 @@ class OptimizationAuditor:
         features_quant = self._get_features_for_model(model_quant, test_prompts)
         inference_time_quant = time.time() - t0
 
+        baseline_features_ref = {}
+        if baseline_prompts:
+            baseline_features_ref = self._get_features_for_model(self.model, baseline_prompts)
+
         # Compute metrics
         all_cpfr_scores = []
         all_drift_scores = []
@@ -410,9 +452,26 @@ class OptimizationAuditor:
 
             f_ref = features_ref[layer]
             f_quant = features_quant[layer]
+            feature_mask = None
+
+            if safety_feature_ids and layer in safety_feature_ids:
+                mask = torch.zeros(f_ref.shape[-1], dtype=f_ref.dtype, device=f_ref.device)
+                valid_feature_ids = [
+                    fid for fid in safety_feature_ids[layer] if 0 <= fid < f_ref.shape[-1]
+                ]
+                if valid_feature_ids:
+                    mask[valid_feature_ids] = 1.0
+                    feature_mask = mask
+            elif baseline_prompts and layer in baseline_features_ref:
+                feature_mask = self._build_safety_feature_mask(
+                    safety_features=f_ref,
+                    baseline_features=baseline_features_ref[layer],
+                    z_threshold=safety_z_threshold,
+                    min_features=min_safety_features,
+                )
 
             # CPFR
-            cpfr_result = self.cpfr_metric.compute(f_ref, f_quant)
+            cpfr_result = self.cpfr_metric.compute(f_ref, f_quant, feature_mask=feature_mask)
             all_cpfr_scores.append(cpfr_result.score)
             all_degraded.extend(
                 [(layer, f) for f in cpfr_result.degraded_features]
@@ -453,15 +512,19 @@ class OptimizationAuditor:
         baseline_prompts: Optional[list[str]] = None,
         configs: Optional[list[QuantizationConfig]] = None,
         model_name: str = "",
+        safety_z_threshold: float = 1.0,
+        min_safety_features: int = 1,
     ) -> SweepResult:
         """
         Run a full sweep across multiple quantization configurations.
 
         Args:
             test_prompts: Safety-relevant prompts
-            baseline_prompts: Normal prompts
+            baseline_prompts: Normal prompts used to derive safety-feature masks
             configs: List of configs to test (defaults to DEFAULT_CONFIGS)
             model_name: Name for the sweep result
+            safety_z_threshold: Min z-score (safety vs baseline) for a feature to be tracked
+            min_safety_features: Minimum number of masked features per layer
 
         Returns:
             SweepResult with all audit results
@@ -479,6 +542,8 @@ class OptimizationAuditor:
                     config=config,
                     test_prompts=test_prompts,
                     baseline_prompts=baseline_prompts,
+                    safety_z_threshold=safety_z_threshold,
+                    min_safety_features=min_safety_features,
                 )
                 sweep_result.results.append(result)
             except Exception as e:

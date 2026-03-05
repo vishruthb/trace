@@ -192,6 +192,7 @@ class Audit:
         sae_dict: Optional[dict[int, Any]] = None,
         tokenizer: Optional[Any] = None,
         device: str = "auto",
+        activation_device: str = "cpu",
         load_in_8bit: bool = False,
         load_in_4bit: bool = False,
     ):
@@ -204,10 +205,12 @@ class Audit:
             sae_dict: Pre-trained SAEs for each layer (optional)
             tokenizer: Tokenizer (loaded automatically if not provided)
             device: Device for models ("auto", "cuda", "cpu")
+            activation_device: Where to store captured activations ("cpu" or "cuda")
             load_in_8bit: Load models in 8-bit mode
             load_in_4bit: Load models in 4-bit mode
         """
         self.device = self._resolve_device(device)
+        self.activation_device = activation_device
         self.console = Console()
 
         # Load models
@@ -294,7 +297,7 @@ class Audit:
             path: Path to SAE checkpoint
             layer: Layer index (if loading single SAE)
         """
-        from trace.sae import SparseAutoencoder
+        from trace_lib.sae import SparseAutoencoder
 
         path = Path(path)
 
@@ -359,7 +362,11 @@ class Audit:
         trainer = SAETrainer(sae)
 
         # Set up hook to collect activations
-        hook_config = HookConfig(layers=[layer], hook_points=["resid_post"])
+        hook_config = HookConfig(
+            layers=[layer],
+            hook_points=["resid_post"],
+            device=self.activation_device,
+        )
         hook_manager = HookManager(self.base_model, hook_config)
 
         # Create activation generator
@@ -395,6 +402,8 @@ class Audit:
         dataset: Union[str, list[str], dict[str, list[str]]] = "harmful_refusal_v1",
         baseline_prompts: Optional[list[str]] = None,
         layers: Optional[list[int]] = None,
+        safety_z_threshold: float = 1.0,
+        min_safety_features: int = 1,
     ) -> FeatureIntegrityReport:
         """
         Trace safety features between base and quantized models.
@@ -403,18 +412,19 @@ class Audit:
 
         Args:
             dataset: Dataset name (built-in), list of prompts, or dict of prompts
-            baseline_prompts: Normal prompts for comparison
+            baseline_prompts: Normal prompts used to derive safety-feature masks
             layers: Specific layers to analyze (default: all with SAEs)
+            safety_z_threshold: Min z-score (safety vs baseline) for a feature to be tracked
+            min_safety_features: Minimum number of masked features per layer
 
         Returns:
             FeatureIntegrityReport with detailed analysis
         """
-        from trace_lib.metrics import CPFR, FeatureDrift
-        from trace_lib.hook_manager import HookManager, HookConfig
+        from trace_lib.metrics import CPFR
 
         # Resolve dataset
         safety_prompts = self._resolve_dataset(dataset)
-        baseline = baseline_prompts or self._get_default_baseline()
+        baseline = baseline_prompts if baseline_prompts is not None else self._get_default_baseline()
 
         # Ensure we have a quantized model to compare
         if self.quant_model is None:
@@ -432,14 +442,15 @@ class Audit:
 
         # Set up metrics
         cpfr = CPFR()
-        drift = FeatureDrift()
 
         # Collect features from both models
         with Progress() as progress:
-            task = progress.add_task("[green]Analyzing features...", total=len(layers) * 2)
+            total_steps = len(layers) * 2 + (len(layers) if baseline else 0)
+            task = progress.add_task("[green]Analyzing features...", total=total_steps)
 
             features_base = {}
             features_quant = {}
+            baseline_features_base = {}
 
             for layer in layers:
                 if layer not in self.sae_dict:
@@ -457,6 +468,12 @@ class Audit:
                 )
                 progress.advance(task)
 
+                if baseline:
+                    baseline_features_base[layer] = self._extract_features(
+                        self.base_model, baseline, layer
+                    )
+                    progress.advance(task)
+
         # Compute metrics
         all_cpfr_scores = []
         all_degraded = []
@@ -469,9 +486,18 @@ class Audit:
 
             f_base = features_base[layer]
             f_quant = features_quant[layer]
+            feature_mask = None
+
+            if baseline and layer in baseline_features_base:
+                feature_mask = self._build_safety_feature_mask(
+                    safety_features=f_base,
+                    baseline_features=baseline_features_base[layer],
+                    z_threshold=safety_z_threshold,
+                    min_features=min_safety_features,
+                )
 
             # CPFR analysis
-            cpfr_result = cpfr.compute(f_base, f_quant)
+            cpfr_result = cpfr.compute(f_base, f_quant, feature_mask=feature_mask)
             all_cpfr_scores.append(cpfr_result.score)
             layer_scores[layer] = cpfr_result.score
 
@@ -557,7 +583,7 @@ class Audit:
         hook_config = HookConfig(
             layers=[layer],
             hook_points=["resid_post"],
-            device="cpu",
+            device=self.activation_device,
         )
         hook_manager = HookManager(model, hook_config)
 
@@ -591,6 +617,37 @@ class Audit:
         if all_features:
             return torch.cat(all_features, dim=0)
         return torch.tensor([])
+
+    def _build_safety_feature_mask(
+        self,
+        safety_features: torch.Tensor,
+        baseline_features: torch.Tensor,
+        z_threshold: float = 1.0,
+        min_features: int = 1,
+    ) -> Optional[torch.Tensor]:
+        """
+        Build a feature mask using contrastive activation (safety vs baseline).
+
+        Returns:
+            Float mask of shape (d_sae,), or None when mask cannot be computed.
+        """
+        if safety_features.numel() == 0 or baseline_features.numel() == 0:
+            return None
+
+        safety_mean = safety_features.mean(dim=0)
+        baseline_mean = baseline_features.mean(dim=0)
+        baseline_std = baseline_features.std(dim=0) + 1e-8
+
+        z_scores = (safety_mean - baseline_mean) / baseline_std
+        mask = (z_scores > z_threshold).to(dtype=safety_features.dtype)
+
+        if mask.sum().item() < min_features:
+            k = min(max(min_features, 1), z_scores.numel())
+            topk = torch.topk(z_scores, k=k).indices
+            mask = torch.zeros_like(z_scores, dtype=safety_features.dtype)
+            mask[topk] = 1.0
+
+        return mask
 
     def _resolve_dataset(
         self, dataset: Union[str, list[str], dict[str, list[str]]]
@@ -639,14 +696,20 @@ class Audit:
     def run_precision_sweep(
         self,
         test_prompts: Optional[list[str]] = None,
+        baseline_prompts: Optional[list[str]] = None,
         configs: Optional[list] = None,
+        safety_z_threshold: float = 1.0,
+        min_safety_features: int = 1,
     ):
         """
         Run a full precision sweep across quantization methods.
 
         Args:
             test_prompts: Safety prompts to test
+            baseline_prompts: Normal prompts used to derive safety-feature masks
             configs: Quantization configs to sweep
+            safety_z_threshold: Min z-score (safety vs baseline) for a feature to be tracked
+            min_safety_features: Minimum number of masked features per layer
 
         Returns:
             SweepResult with all audit results
@@ -661,12 +724,17 @@ class Audit:
             sae_dict=self.sae_dict,
             tokenizer=self.tokenizer,
             device=self.device,
+            activation_device=self.activation_device,
         )
 
         prompts = test_prompts or self._load_builtin_dataset("harmful_refusal_v1")
+        baseline = baseline_prompts if baseline_prompts is not None else self._get_default_baseline()
 
         return auditor.run_sweep(
             test_prompts=prompts,
+            baseline_prompts=baseline,
             configs=configs,
             model_name=self.base_model_name,
+            safety_z_threshold=safety_z_threshold,
+            min_safety_features=min_safety_features,
         )

@@ -57,13 +57,13 @@ Further examples:
 
 trace measures how well safety-critical features are preserved during quantization using the **CPFR** metric:
 
-```
-CPFR(f) = 1 - ||f_ref - f_q||₂ / (||f_ref||₂ + ε)
-```
+$$
+\mathrm{CPFR}(f) = 1 - \frac{\lVert f_{\mathrm{ref}} - f_q \rVert_2}{\lVert f_{\mathrm{ref}} \rVert_2 + \varepsilon}
+$$
 
 Where:
-- `f_ref` = Features extracted from the reference (high-precision) model
-- `f_q` = Features extracted from the quantized model
+- $f_{\mathrm{ref}}$ = Features extracted from the reference (high-precision) model
+- $f_q$ = Features extracted from the quantized model
 - A drop in CPFR indicates corruption of the model's safety circuits
 
 ### Safety Fingerprints
