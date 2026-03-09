@@ -1,4 +1,4 @@
-# trace
+# [trace](https://github.com/vishruthb/trace)
 
 Trace is a technical diagnostic framework designed to audit the structural integrity of AI safety mechanisms during model optimization. As models transition from high-precision research environments (FP32) to optimized production environments (INT8/INT4), the internal representations undergo non-linear transformations. Trace programmatically identifies if these transformations lead to something called "safety bit rot", where capability features are preserved but alignment-centric features are degraded or silenced.
 
